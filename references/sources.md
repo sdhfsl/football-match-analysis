@@ -152,13 +152,58 @@ https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t={name}
 - 时间戳是 **UTC**，适合做时区交叉验证。
 - **覆盖不全**：小级别/综合运动会（如亚运会）只登记部分场次。不能作为唯一源，也不要用"这个源没有"推断"这场不存在"。
 
-### 5. wttr.in —— 天气
+### 5. wttr.in —— 天气（仅赛前）
 
 ```bash
 curl -s "https://wttr.in/Toyota?format=%l:+%C+%t+feels+%f+humidity+%h+wind+%w+precip+%p"
 ```
 
 注意用**比赛所在城市**，不是常说的城市名（如决赛地在丰田市，不在名古屋）。
+
+**`wttr.in` 只有实时/预报值，对已完赛场次无用。** 复盘任务要历史天气，用 Open-Meteo 归档接口：
+
+```bash
+# 经纬度 + 日期即可，返回 JSON，免费无需 key
+curl -s "https://archive-api.open-meteo.com/v1/archive?latitude=35.08&longitude=137.15&start_date=2026-09-06&end_date=2026-09-06&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max&timezone=Asia%2FTokyo"
+```
+
+### 6. Understat —— xG 与技术统计（五大联赛）
+
+**必须加 `--compressed`**，否则拿到的是 gzip 二进制而不是 JSON。同时带浏览器 UA 与 `X-Requested-With`。
+
+```bash
+UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+# 单队整季：逐场结果 + xG/xGA
+curl -s --compressed -A "$UA" -H "X-Requested-With: XMLHttpRequest" \
+  "https://understat.com/getTeamData/Arsenal/2026"
+
+# 整个联赛：所有球队的逐场历史
+curl -s --compressed -A "$UA" -H "X-Requested-With: XMLHttpRequest" \
+  "https://understat.com/getLeagueData/EPL/2026"
+```
+
+实测均返回 `200` + 真实 JSON。注意 `/main/getPlayersStats/` 是 **POST** 端点，GET 会返回 `{"error":{"error_code":4}}`。
+
+联赛代号：`EPL` / `La_liga` / `Bundesliga` / `Serie_A` / `Ligue_1`。
+
+**覆盖边界**：只有这五大联赛。**不覆盖**其他联赛、国家队赛事、综合运动会赛事——亚运会男足在这里查不到 xG，这是数据不存在，不是取数失败。
+
+### 7. Transfermarkt —— 伤停、转会、阵容
+
+`https://www.transfermarkt.com/` 实测 `200` 可达（带浏览器 UA）。球队页形如 `/{slug}/startseite/verein/{id}`。
+
+用途：伤停与缺席球员、球队阵容与年龄结构、比赛页的首发与换人。**它没有亚运会级别的比赛页**——先用站内搜索确认覆盖，别猜 id（猜到的 id 会返回别的球队）。俱乐部赛事是它的强项。
+
+### 8. Sky Sports / playerstats.football / 11v11 —— 俱乐部赛事战报与统计
+
+已完赛的俱乐部赛事，这三个源能补齐雷速覆盖不到的部分：
+
+- **Sky Sports 数据页**：控球、射门(射正)、禁区内外射门、角球、犯规、解围、扑救、xG/xGOT 与定位球拆分。战报页还含主帅与名宿引述。
+- **playerstats.football**：球队技术统计逐项（可与 Sky 交叉）。
+- **11v11**：交锋史（历史总战绩、纪录）与首发/换人细节。
+
+注意源的字段可能出错（实测发现 Sky 的"抢断成功率 500%"这类明显异常值）——**异常值要剔除并在报告中注明**，不要照抄。
 
 ## 二、不可用源（不要浪费时间）
 
@@ -172,6 +217,9 @@ curl -s "https://wttr.in/Toyota?format=%l:+%C+%t+feels+%f+humidity+%h+wind+%w+pr
 | vip.titan007.com / www.nowgoal.com | `HTTP 000`（域名不可达） | 不可用 |
 | okooo.com | 首页 `200` 但无盘口字段（JS 渲染） | 未找到比赛级盘口页 |
 | data.7m.com.cn | 首页 `200`，只有联赛级 `odds_away{N}.shtml` 链接 | 未找到比赛级盘口页 |
+| www.espn.co.uk | `202` 空响应体 | 不可用 |
+| site.api.espn.com | `403` | 不可用 |
+| Forza Football | `403` | 不可用 |
 
 ## 三、技法速查
 
@@ -185,6 +233,9 @@ curl -s "https://wttr.in/Toyota?format=%l:+%C+%t+feels+%f+humidity+%h+wind+%w+pr
 | 定位器匹配到多个 | 用容器类名精确限定（如 `.show-module .module-name`），不要用 `first()`/`nth()` 硬凑 |
 | Wikipedia 表格不见了 | `extracts` 剥表格，改抓 HTML |
 | 中文页面解析报编码错 | 试 `gb18030` + `errors='replace'`；注意 gb2312 页面常混 UTF-8 |
+| 拿到的是 gzip 二进制而非 JSON | curl 漏了 `--compressed`（Understat 等需要） |
+| 报 `Browser is not available in subagent` | 浏览器不可用，走 SKILL.md 的"降级路径"，**不要跳过数据项也不要编** |
+| 某源返回的比率明显荒谬（如 500%） | 源的字段错误，剔除并在报告中注明，不要照抄 |
 
 ## 四、更新本文档
 
